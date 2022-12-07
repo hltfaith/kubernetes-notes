@@ -735,6 +735,160 @@ spec:
 
 
 
+## 全自动调度
+
+Deployment、RC的主要功能之一就是自动部署一个容器应用的多份副本，以及持续监控副本的数量，在集群内始终维持用户指定的副本数量。
+
+可以通过 `kubectl get rs` 和 `kubectl get pods` 查看已创建的 ReplicaSet (RS) 和 Pod 信息。
+
+从调度策略上来说，创建的Pod由系统全自动完成调度。他们各自最终运行在哪个节点上，完全由 Master 的Scheduler 经过一系列算法计算得出，用户无法干预调度过程和结果。
+
+> 除了使用系统自动调度算法完成一组 Pod 的部署， Kubernetes 也提供了多种丰富的调度策略，用户只需在 Pod 的定义中使用 NodeSelector、NodeAffinity、PodAffinity、Pod驱逐等更加细颗粒的调度策略设置，就能完成对 Pod 的精准调度。
+
+
+
+## NodeSelector 定向调度
+
+Kubernetes Master 上的 Scheduler 服务 (kube-scheduler进程) 负责实现 Pod 的调度，整个调度过程通过执行一系列复杂的算法，最终为每个 Pod 都计算出一个最佳的目标节点，这一过程是自动完成的，通常我们无法知道 Pod 最终会被调度到哪个节点上。
+
+在实际情况下，也可能需要将 Pod 调度到指定的一些 Node 上，可以通过 Node 的标签 (Label) 和 Pod 的 nodeSelector 属性相匹配，来达到上述目的
+
+```shell
+$ kubectl label nodes <node-name> <label-key>=<label-value>
+```
+
+例如，为 k8s-node-1 节点打上一个 zone=north 标签
+
+```shell
+$ kubectl label nodes k8s-node-1 zone=north
+```
+
+然后，在 Pod 的定义中加上 nodeSelector 的设置
+
+redis-master-controller.yaml
+
+```yaml
+apiVersion: v1
+kind: ReplicationController
+metadata:
+  name: redis-master
+  labels:
+    name: redis-master
+spec:
+  replicas: 1
+  selector:
+    name: redis-master
+  template:
+    metadata:
+      labels:
+        name: redis-master
+    spec:
+      containers:
+      - name: master
+        image: kubeguide/redis-master
+        ports:
+        - containerPort: 6379
+      nodeSelector:
+        zone: north
+```
+
+运行 kubectl create -f 命令创建 Pod， scheduler 就会将该 Pod 调度到拥有 "zone=north" 标签的Node上。
+
+> 注意：如果给多个 Node 都定义了相同的标签 (例如 zone=north)，则 scheduler 会根据调度算法从这组 Node 中挑选一个可用的 Node进行 Pod 调度。
+>
+> 如果指定了 Pod 的 nodeSelector 条件，且在集群中不存在包含相应标签的 Node，则即使在集群中还有其他可供使用的Node，这个 Pod 也无法被成功调度。
+
+
+
+Kubernetes 也会给 Node 预定义一些标签
+
+- kubernetes.io/hostname
+- beta.kubernetes.io/os
+- beta.kubernetes.io/arch
+- kubernetes.io/os
+- kubernetes.io/arch
+
+
+
+## NodeAffinity 亲和性调度
+
+NodeAffinity 意为 Node 亲和性的调度策略，是用于替换 NodeSelector 的全新调度策略。
+
+目前有两种节点亲和性表达
+
+- RequiredDuringSchedulingIgnoredDuringExecution: 必须满足指定的规则才可以调度 Pod 到 Node 上(功能上 nodeSelector 很像，但是使用的是不同的语法)，相当于硬限制。
+- PreferredDuringSchedulingIgnoredDuringExecution: 强调优先满足指定规则，调度器会尝试调度 Pod 到 Node上，但并不强求，相当于软限制。多个优先级规则还可以设置权重 (weight) 值，以定义执行的先后顺序。
+
+IgnoredDuringExecution 的意思是：如果一个 Pod 所在的节点在 Pod 运行期间标签发生了变更，不在符合该 Pod 的节点亲和性需求，则系统将忽略 Node 上 Label 的变化，该 Pod 能继续在该节点运行。
+
+举例
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: with-node-affinity
+spec:
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoreDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: beta.kubernetes.io/arch
+            operator: In
+            values:
+            - amd64
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 1
+        preference:
+          matchExpressions:
+            - key: disk-type
+              operator: In
+              values:
+              - ssd
+  containers:
+  - name: with-node-affinity
+    image: gcr.io/google_containers/pause:2.0
+```
+
+> 从配置中可以看到 In 操作符， NodeAffinity 语法支持的操作符包括 In、NotIn、Exists、DoesNotExist、Gt、Lt。
+
+NodeAffinity 规则设置的 注意事项如下：
+
+- 如果同时定义了 nodeSelector 和 nodeAffinity，那么必须两个条件都得到满足， Pod 才能最终运行在指定的 Node 上。
+- 如果 nodeAffinity 指定了多个 nodeSelectorTerms，那么其中一个能匹配成功即可。
+- 如果在 nodeSelectorTerms 中有多个 matchExpressions，则一个节点必须满足所有 matchExpressions 才能运行该 Pod。
+
+
+
+## PodAffinity 亲和与互斥调度
+
+简单的说，就是相关联的两种或多种 Pod 是否可以在同一个拓扑域中共存或者互斥。
+
+> 拓扑域可以理解为：由一些Node节点组成，这些 Node 节点通常有相同的地址空间坐标，比如在同一个机架、机房或地区，一般用 region 表示机架、机房等的拓扑区域，用Zone表示地区这样跨度更大的拓扑区域。 在极端情况下，我们也可以认为一个 Node 就是一个拓扑区域。
+
+Kubernetes 内置了一些常用的默认拓扑域
+
+- kubernetes.io/hostname
+- topology.kubernetes.io/region
+- topology.kubernetes.io/zone
+
+> 注意：以上拓扑域是由 kubernetes 自己维护，在Node节点初始化时，controller-manager 会为 Node 打上许多标签，比如 kubernetes.io/hostname 这个标签就会被设置为 Node 节点的 hostname。
+
+
+
+Pod亲和与互斥的调度具体做法，是通过在 Pod 的定义上增加 topologyKey 属性，来声明对应的目录拓扑区域内几种相关联的 Pod 要 “在一起或不在一起”。 与节点亲和相同， Pod亲和与互斥的条件设置也是 requiredDuringSchedulingIgnoredDuringExecution 和 preferredDuringSchedulingIgnoredDuringExecution。Pod 的亲和性被定义于 PodSpec 的 affinity 字段的 podAffinity 子字段中，Pod 间的互斥性则被定义于同一层次的 podAntiAffinity子字段中。
+
+
+
+
+
+
+
+
+
+
+
 
 
 
