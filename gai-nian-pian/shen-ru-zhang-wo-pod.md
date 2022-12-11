@@ -881,19 +881,62 @@ Pod亲和与互斥的调度具体做法，是通过在 Pod 的定义上增加 to
 
 
 
+## Taints、Tolerations 污点和容忍
+
+简单地说，被标记为 Taint 的节点就是存在问题的节点，比如磁盘要满、资源不足、存在安全隐患要进行升级维护，希望新的 Pod 不会被调度过来，但被标记为 Taint 的节点并非故障节点，仍是有效的工作节点，所以仍需将某些 Pod 调度到这些节点上时，可以通过使用 Toleration 属性来实现。
 
 
 
+## Pod Priority Preemption 优先级调度
 
 
 
+>  :new: Tip：
+>
+> ​	在 Kubernetes 1.8 之前，当集群的可用资源不足时，在用户提交新的 Pod 创建请求后，该 Pod 会一直处于 Pending 状态，即使这个 Pod 是一个很重要 (很有身份) 的 Pod，也只能被动等待其他 Pod 被删除并释放资源，才能有机会被调度成功。
+>
+> ​    Kubernetes 1.8 版本引入了基于 Pod 优先级抢占 (Pod Priority Preemption)的调度策略，此时 Kubernetes 会尝试释放目标节点上低优先级的 Pod，以腾出空间（资源）安置高优先级的 Pod，这种调度方式被称为 "抢占式调度"。
+>
+>    在 Kubernetes 1.11 版本中，该特性升级为 Beta 版本，默认开启，在后续的 Kubernetes 1.14 版本中正式 Release。 
 
 
 
+优先级抢占调度策略的核心行为分别是驱逐 (Eviction) 与抢占 (Preemption)，这两种行为的使用场景不同，效果相同。 Eviction 是 kubelet 进程的行为，即当一个 Node 资源不足 (under resource pressure)时，该节点上的 Kubelet 进程会执行驱逐动作，此时 kubelet 会综合考虑 Pod 的优先级、资源申请量与实际使用量等信息来计算哪些 Pod 需要被驱赶；当同样优先级的 Pod 需要被驱赶时，实际使用的资源量超过申请量最大倍数的高耗能 Pod 会被首先驱逐。
+
+对于 Qos 等级为 "Best Effort" 的 Pod 来说，由于没有定义资源申请，所以他们实际使用的资源可能非常大。 Preemption 则是 Scheduler 执行的行为，当一个新的 Pod 因为资源无法满足而不能被调度时， Scheduler 可能 (有权决定) 选择驱逐部分低优先级的 Pod 实例来满足此 Pod 的调度目标，这就是 Preemption 机制。
 
 
 
+Pod优先级调度示例
 
+```yaml
+apiVersion: scheduling.k8s.io/v1beta1
+kind: PriorityClass
+metadata:
+  name: high-priority
+value: 1000000
+globalDefault: false
+description: "This priority class should be used for XYZ service pods only."
+```
+
+PriorityClass 不属于任何命名空间，优先级为1000000，数字越大，优先级越高，超过一亿的数字被系统保留，用于指派给系统组件。
+
+在Pod中引用优先级类别
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx
+  labels: 
+    env: test
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+    imagePullPolicy: IfNotPresent
+  priorityClassName: high-priority
+```
 
 
 
