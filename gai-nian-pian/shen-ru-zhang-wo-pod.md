@@ -940,37 +940,50 @@ spec:
 
 
 
+## 自定义调度器 :question:
 
+一般情况下，每个新Pod都会由默认的调度器进行调度。但是如果在 Pod 中提供了自定义的调度器名称，那么默认的调度器会忽略该 Pod，转由指定的调度器完成 Pod 的调度。
 
+为Pod指定一个名为 my-scheduler 的自定义调度器
 
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx
+  labels:
+    app: nginx
+spec:
+  schedulerName: my-scheduler
+  containers:
+  - name: nginx
+    image: nginx
+```
 
+如果自定义的调度器还未在系统中部署，则默认的调度器会忽略这个 Pod，这个 Pod 将会永远处于 Pending 状态。
 
+可以用任意语言实现简单或复杂的自定义调度器。
 
+下面使用 Bash 脚本进行实现，调度策略为随机选择一个 Node。这个调度器需要通过 `kubectl proxy` 来运行
 
+```shell
+#!/bin/bash
+SERVER='localhost:8001'
+while true;
+do
+	for PODNAME in $(kubectl --server $SERVER get pods -o json | jq '.items[] | select(.spec.schedulerName == "my-scheduler") | select(.spec.nodeName == null) | .metadata.name' | tr -d '"');
+	do
+		NODES=($(kubectl --server $SERVER get nodes -o json | jq '.items[].metadata.name' | tr -d '"'))
+		NUMNODES=${#NODES[@]}
+		CHOSEN=${NODES[$[$RANDOM % $NUMNODES]]}
+		curl --header "Content-Type:application/json" --request POST --data '{"apiVersion":"v1", "kind":"Binding", "metadata":{"name": "'$PODNAME'"}, "target": {"apiVersion": "v1", "kind": "Node", "name": "'$CHOSEN'"}}' http://$SERVER/api/v1/namespaces/default/pods/$PODNAME/binding/
+		echo "Assigned $PODNAME to $CHOSEN"
+	done
+	sleep 1
+done
+```
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+> Tip: 该脚本需要实操论证。
 
 
 
