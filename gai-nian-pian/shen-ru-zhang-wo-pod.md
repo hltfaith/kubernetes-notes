@@ -940,7 +940,7 @@ spec:
 
 
 
-## 自定义调度器 :question:
+## 自定义调度器
 
 一般情况下，每个新Pod都会由默认的调度器进行调度。但是如果在 Pod 中提供了自定义的调度器名称，那么默认的调度器会忽略该 Pod，转由指定的调度器完成 Pod 的调度。
 
@@ -984,6 +984,154 @@ done
 ```
 
 > Tip: 该脚本需要实操论证。
+
+
+
+# Init Container 初始化容器
+
+需要场景中，都需要进行如下初始化操作
+
+- 基于环境变量或配置模版生成配置文件。
+- 从远程数据库获取本地所需配置，或者将自身注册到某个中央数据库中。
+- 下载相关依赖包，或者对系统进行一些预配置操作。
+
+**init container 与应用容器在本质上是一样的，但它们是仅运行一次就结束的任务，并且必须在成功运行完成后，系统才能继续执行下一个容器。**
+
+根据 Pod 的重启策略 (RestartPolicy)，当 init container 运行失败而且设置了 `RestartPolicy=Never` 时， Pod将会启动失败；而设置 `RestartPolicy=Always`时，Pod将会被系统自动重启。
+
+
+
+(补充图 3.10)
+
+
+
+以 Nginx 应用为例，在启动 Nginx 之前，通过初始化容器 busybox 为 Nginx 创建一个 index.html 主页文件。
+
+nginx-init-containers.yaml
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx
+  annotations:
+spec:
+  initContainers:
+  - name: install
+    image: busybox
+    command:
+    - wget
+    - "-O"
+    - "/work-dir/index.html"
+    - http://kubernetes.io
+    volumeMounts:
+    - name: workdir
+      mountPath: "/work-dir"
+  containers:
+  - name: nginx
+    image: nginx
+    ports:
+    - containerPort: 80
+    volumeMounts:
+    - name: workdir
+      mountPath: /usr/share/nginx/html
+  dnsPolicy: Default
+  volumes:
+  - name: workdir
+    emptyDir: {}
+```
+
+
+
+> 注意：可以设置多个 init container，将按顺序逐个运行，并且只有前一个 init container 运行成功后才能运行后一个 init container。在所有 init container 都成功运行后，Kubernetes 才会初始化 Pod 的各种信息，并开始创建和运行应用容器。
+>
+> 在Pod重新启动时，init container 将会重新运行。
+
+
+
+# Pod 的升级和回滚
+
+如果 Pod 是通过 Deployment 创建的，则可以在运行时修改 Deployment 的 Pod 定义(spec.template) 或镜像名称，并应用到 Deployment 对象上，系统即可完成 Deployment 的 rollout 可被视为 Deployment 的自动更新或者自动部署动作。
+
+如果在更新过程中发生了错误，可以通过回滚操作恢复 Pod 的版本。
+
+
+
+## Deployment 升级
+
+以 Deployment nginx 为例
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+spec:
+  selector:
+    matchLabels:
+      app: nginx
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.7.9
+        ports:
+        - containerPort: 80
+```
+
+现在  Pod 镜像需要被更新为 Nginx:1.9.1，可以通过 `kubectl set image` 命令为 Deployment 设置新的镜像名称
+
+```shell
+$ kubectl set image deployment/nginx-deployment nginx=nginx:1.9.1
+```
+
+另一种更新的方式是使用 `kubectl edit` 命令修改 Deployment 的配置，将 `spec.template.spec.containers[0].image` 从 Nginx:1.7.9 更改为 Nginx:1.9.1
+
+```shell
+$ kubectl edit deployment/nginx-deployment
+```
+
+使用  `kubectl rollout status` 命令查看 Deployment 的更新过程
+
+```shell
+$ kubectl rollout status deployment/nginx-deployment
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
