@@ -1101,31 +1101,120 @@ $ kubectl edit deployment/nginx-deployment
 $ kubectl rollout status deployment/nginx-deployment
 ```
 
+在 Deployment 的定义中，可以通过 `spec.strategy` 指定 Pod 更新的策略，目前支持两种策略：Recreate(重建)和 RollingUpdate(滚动更新)，默认值为 RollingUpdate
+
+- Recreate: 设置 `spec.strategy.type=Recreate`，表示 Deployment 在更新 Pod 时，会先 "杀掉" 所有正在运行的 Pod，然后创建新的Pod。
+- RollingUpdate: 设置 spec.strategy.type=RollingUpdate，表示 Deployment 会以滚动更新的方式来逐个更新 Pod。同时，可以通过设置 spec.strategy.rollingUpdate 下的两个参数 (maxUnavailable 和 maxSurge) 来控制滚动更新的过程。
 
 
 
+## Deployment 回滚
+
+将 Deployment 回滚到之前的版本时，只有 Deployment 的 Pod 模版部分会被修改，在默认情况下，所有 Deployment 的发布历史记录都被保留在系统中 (可以配置历史记录数量)，便于随时进行回滚操作。
+
+注意，在创建 Deployment 时使用 `--record` 参数，就可以在 `CHANGE-CAUSE`列看到每个版本使用的命令。
+
+如果需要查看特定版本的详细信息，则可以加上 `--revision=<N>参数`：
+
+```shell
+$ kubectl rollout history deployment/nginx-deployment --revision=3
+```
+
+例如，回滚到上一个部署的版本
+
+```shell
+$ kubectl rollout undo deployment/nginx-deployment
+```
+
+也可以使用 `--to-revision` 参数指定回滚到的部署版本
+
+```shell
+$ kubectl rollout undo deployment/nginx-deployment --to-revision=2
+```
 
 
 
+## 暂停、恢复 Deployment
+
+通过 `kubectl rollout pause` 命令暂停
+
+```shell
+$ kubectl rollout pause deployment/nginx-deployment
+```
+
+在暂停 Deployment 部署后，可以根据需要进行任意次数的配置更新
+
+```shell
+$ kubectl set resources deployment nginx-deployment -c=nginx --limits=cpu=200m,memory=512Mi
+```
+
+最后恢复 Deployment
+
+```shell
+$ kubectl rollout resume deploy nginx-deployment
+```
+
+查看 Deployment 事件，查看更新
+
+```shell
+$ kubectl describe deployment/nginx-deployment
+```
 
 
 
+## DaemonSet 更新策略
+
+主要分为两种： OnDelete 和 RollingUpdate。
+
+**OnDelete:** DaemonSet 的默认升级策略。 当使用 OnDelete 作为升级策略时，在创建好新的 DaemonSet 配置之后，新的 Pod 并不会被自动创建，直到用户手动删除旧版的 Pod，才触发新建操作，即只有手工删除了 DaemonSet 创建的 Pod 副本，新的 Pod 副本才会被创建出来。
+
+**RollingUpdate:**  当使用 RollingUpdate 作为升级策略对 DaemonSet 进行更新时，旧版本的 Pod 将自动 "杀掉"，然后自动创建新版本的 DaemonSet Pod。整个过程与普通 Deployment 的滚动升级一样是可控的。 **不过有两点不同于普通 Pod 的滚动升级：1.目前 Kubernetes 还不支持查看和管理 DaemonSet的更新历史记录；2.DaemonSet的回滚(Rollback) 并不能如同 Deployment 一样直接通过 kubectl rollback 命令来实现，必须通过再次提交旧版配置的方式实现。**
+
+下面是 DaemonSet 采用 RollingUpdate 升级策略的 YAML定义：
+
+```yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: goldpinger
+spec:
+  updateStrategy:
+    type: RollingUpdate
+```
 
 
 
+## StatefulSet 更新策略
+
+StatefulSet 更新策略增加了 updateStrategy 字段给予用户更强的升级控制能力，并实现了 RollingUpdate、OnDelete 和 Partitioned 这几种策略，保证 StatefulSet 中各 Pod 有序、逐个更新，并且能够保留更新历史，也能回滚到某个历史版本。 如果用户未设置 updateStrategy 字段，则系统默认使用 RollingUpdate 策略。
 
 
 
+# Pod 扩缩容
+
+## 手动扩缩容机制
+
+通过 `kubectl scale` 命令可以将 Pod 副本数量从初始的 3 个更新为 5 个
+
+```shell
+$ kubectl scale deployment nginx-deployment --replicas 5
+```
+
+> 将 --replicas 的值设置为比当前 Pod 副本数量更小的数字，系统将会 "杀掉" 一些运行中的 Pod。
 
 
 
+## 自动扩缩容机制
+
+kubernetes 从1.1版本，新增了 Horizontal Pod Autoscaler (HPA) 的控制器，用于实现基于 CPU使用率进行自动 Pod 扩缩容的功能。默认定义的探测周期 (15s)，周期性地检测目标 Pod 的资源性能指标，并与HPA资源对象中的扩缩容条件进行对比，在满足条件时对 Pod 副本数量进行调整。
+
+从1.11版本，kubernetes 全面转向基于 Metrics Server 完成数据采集。
 
 
 
+**HPA 工作原理**
 
-
-
-
+kubernetes 中的某个 Metrics Server 持续采集所有  Pod 副本的指标数据。 HPA控制器通过 Metrics Server 的API获取这些数据，基于用户定义的扩缩容规则进行计算，得到目标 Pod 的副本数量。当目标 Pod 副本数量与当前副本数量不同时， HPA控制器就向 Pod 副本控制器 (Deployment、RC或 ReplicaSet) 发起 scale 操作，调整 Pod 的副本数量，完成扩缩容操作。
 
 
 
