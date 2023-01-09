@@ -1218,6 +1218,63 @@ kubernetes 中的某个 Metrics Server 持续采集所有  Pod 副本的指标�
 
 
 
+举例，创建一个 HorizontalPodAutoscaler 对象，用于为 HPA 控制器提供用户期望的自动扩缩容配置
+
+```yaml
+apiVersion: autoscaling/v2beta2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: sample-app
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: sample-app
+    minReplicas: 1
+    maxReplicas: 10
+    metrics:
+    - type: Pods
+      pods:
+        metric:
+          name: http_requests
+        target:
+          type: AverageValue
+          averageValue: 500m
+```
+
+其中参数
+
+-  `scaleTargetRef`： 设置HPA的作用对象为之前部署的 Deployment "sample-app"。
+- `type=Pods`: 设置指标类型为 Pods，表示从  Pod 中获取指标数据
+
+可以通过聚合API查询 Pod 指标
+
+```shell
+$ kubectl get --raw "/apis/metrics.k8s.io/v1beta1/namespaces/ns-xxxxxx-xxxxx/pods/mixer-engine-0"
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
