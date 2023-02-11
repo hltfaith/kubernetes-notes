@@ -146,10 +146,10 @@ Service 不仅具有标准网络协议的IP地址，还以 DNS 域名的形式�
 
 目前 kube-proxy 提供以下代理模式 (通过启动参数 `--proxy-mode` 设置)
 
-- userspace 模式：用户空间模式，由 kube-proxy完成代理的实现，效率最低，不再推荐使用。
-- iptables模式：kube-proxy通过设置 Linux Kernel 的 iptables 规则，实现从 Service 到后端 Endpoint 列表的负载分发规则，效率很高。但是，如果某个后端 Endpoint 在转发不可用，此次客户端请求就会得到失败的响应，相对于 userspace 模式来说更不可靠。 此时应该通过为 Pod 设置 readinessprobe (服务可用性健康检查)来保证只有达到 ready 状态的 Endpoint 才会被设置为 Service 的后端 Endpoint。
-- ipvs模式：在 Kubernetes 1.11 版本中达到 Stable 阶段，kube-proxy 通过设置  Linux Kernel 的 netlink 接口设置 IPVS规则，转发效率和支持的吞吐率都是最高的。 ipvs模式要求 Linux Kernel 启用 IPVS 模块，如果操作系统未启用 IPVS 内核模块，kube-proxy 则会自动切换至 iptables  模式。 同时，ipvs 模式支持更多的负载均衡策略。
-- kernelspace 模式： Windows Server 上的代理模式。
+- **userspace 模式：**用户空间模式，由 kube-proxy完成代理的实现，效率最低，不再推荐使用。
+- **iptables模式：**kube-proxy通过设置 Linux Kernel 的 iptables 规则，实现从 Service 到后端 Endpoint 列表的负载分发规则，效率很高。但是，如果某个后端 Endpoint 在转发不可用，此次客户端请求就会得到失败的响应，相对于 userspace 模式来说更不可靠。 此时应该通过为 Pod 设置 readinessprobe (服务可用性健康检查)来保证只有达到 ready 状态的 Endpoint 才会被设置为 Service 的后端 Endpoint。
+- **ipvs模式：**在 Kubernetes 1.11 版本中达到 Stable 阶段，kube-proxy 通过设置  Linux Kernel 的 netlink 接口设置 IPVS规则，转发效率和支持的吞吐率都是最高的。 ipvs模式要求 Linux Kernel 启用 IPVS 模块，如果操作系统未启用 IPVS 内核模块，kube-proxy 则会自动切换至 iptables  模式。 同时，ipvs 模式支持更多的负载均衡策略。
+- **kernelspace 模式：** Windows Server 上的代理模式。
 
 
 
@@ -416,25 +416,129 @@ $ nslookup -q=srv _http._tcp.webapp.default.svc.cluster.local
 
 
 
+## Ingress 7层路由
+
+Ingress 资源对象，用于将 Kubernetes 集群外的客户端请求路由到集群内部的服务上，同时提供 7 层 (HTTP和HTTPS) 路由功能。
+
+需要注意的是，Ingress 只能以 HTTP 和 HTTPS 提供服务，对于使用其他网络协议的服务，可以通过设置 Service 的类型 (type) 为 NodePort 或 LoadBalancer 对集群外部的客户端提供服务。
+
+使用 Ingress 进行服务路由时，Ingress Controller 基于 Ingress 规则将客户端请求直接转发到 Service 对应的后端 Endpoint (pod) 上，这样会跳过 kube-proxy 设置的路由转发规则，以提高网络转发效率。
 
 
 
+### Ingress 转发到单个后端服务
+
+基于这种设置，客户端发送到 Ingress Controller 的访问请求都将被转发到后端的唯一服务，在这种情况下，Ingress 无需定义任何rule，只需设置一个默认的后端服务(defaultBackend)。
+
+对 Ingress Controller 的访问请求都将被转发到 "myweb:8080"
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: test-ingress
+spec:
+  defaultBackend:
+    service:
+      name: webapp
+      port:
+        number: 8080
+```
 
 
 
+### 将同一域名的不同URL路径转发到不同的服务
+
+[![pSWGrnK.png](https://s1.ax1x.com/2023/02/09/pSWGrnK.png)](https://imgse.com/i/pSWGrnK)
+
+这种配置常用于一个网站通过不同的路径提供不同的服务的场景，例如 /web 表示访问 Web 页面， /api 表示访问 API 接口，对应到后端的两个服务，只需在 Ingress 规则定义中设置将同一域名的不同URL路径转发到不同的后端服务。
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: simple-fanout-example
+spec:
+  rules:
+  - host: mywebsite.com
+    http:
+      paths:
+      - path: /web
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: web-service
+            port:
+              number: 8080
+      - path: /api
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: api-service
+            port:
+              number: 8081
+```
 
 
 
+### 将不同的域名(虚拟主机名)转发到不同的服务
+
+[![pSW08ns.png](https://s1.ax1x.com/2023/02/09/pSW08ns.png)](https://imgse.com/i/pSW08ns)
+
+这里指基于 host 域名的 Ingress 规则将客户端发送到同一个 IP 地址的HTTP请求，根据不同的域名转发到后端不同的服务，例如foo.bar.com域名由 service1 提供服务， bar.foo.com 域名由 service2 提供服务。
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: name-virtual-host-ingress
+spec:
+  rules:
+  - host: foo.bar.com
+    http:
+      paths:
+      - pathType: Prefix
+        path: "/"
+        backend:
+          service:
+            name: service1
+            port:
+              number: 80
+  - host: bar.foo.com
+    http:
+      paths:
+      - pathType: Prefix
+        path: "/"
+        backend:
+          service:
+            name: service2
+            port:
+              number: 80
+```
 
 
 
+### 不使用域名的转发规则
 
+如果在 Ingress 中不定义任何 host 域名， Ingress Controller 则将所有客户端请求都转发到后端服务。例如下面的配置为将 `<ingress-controller-ip>/demo` 的访问请求转发到 `webapp:8080/demo` 服务。
 
-
-
-
-
-
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: test-ingress
+spec:
+  rules:
+  - http:
+    paths:
+    - path: /demo
+      pathType: Prefix
+      backend:
+        service:
+          name: webapp
+          port:
+            number: 8080
+```
 
 
 
